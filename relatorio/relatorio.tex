@@ -1,0 +1,78 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazilian]{babel}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{listings,xcolor,booktabs,array,parskip,hyperref}
+\lstset{basicstyle=\ttfamily\footnotesize,backgroundcolor=\color{black!5},frame=single,
+  rulecolor=\color{black!20},breaklines=true,columns=fullflexible,keepspaces=true,
+  literate={á}{{\'a}}1 {é}{{\'e}}1 {ã}{{\~a}}1 {ç}{{\c c}}1 {ó}{{\'o}}1 {í}{{\'i}}1 {ú}{{\'u}}1 {õ}{{\~o}}1 {ê}{{\^e}}1}
+\begin{document}
+\begin{titlepage}
+\centering\vspace*{5cm}
+{\large Disciplina: \textbf{Teste de Software}\par}\vspace{1.5cm}
+{\Huge\bfseries Implementando Padrões de Teste\\(Test Patterns)\par}\vspace{1cm}
+{\large Trabalho Prático\par}\vspace{3cm}
+{\large \textbf{Aluno:} Miguel Figueiredo Diniz\par}\vspace{.3cm}
+{\large \textbf{Matrícula:} 853959\par}
+\end{titlepage}
+
+\section{Padrões de Criação de Dados (Builders)}
+\subsection{Por que CarrinhoBuilder e não CarrinhoMother?}
+O \texttt{Carrinho} é um objeto composto e muito variável: pode ter usuário padrão ou premium e zero, um ou vários itens, com preços diferentes. Cada combinação relevante exigiria um método próprio em um Object Mother (\texttt{umCarrinhoVazio()}, \texttt{umCarrinhoPremiumCom200Reais()}, \ldots), gerando uma \emph{explosão de métodos} com nomes que escondem os valores reais. O Object Mother serve bem para entidades simples e estáveis, como o \texttt{User}, e por isso foi usado apenas em \texttt{UserMother}. Para o carrinho, o Data Builder define valores padrão válidos e permite sobrescrever somente o que importa em cada cenário, por meio de uma API fluente (\texttt{comUser}, \texttt{comItens}, \texttt{comItem}, \texttt{vazio}, \texttt{build}).
+
+\subsection{Antes e Depois}
+\textbf{Antes} (setup manual, ``Setup Obscuro''; repetido com pequenas variações em cada teste):
+\begin{lstlisting}
+const user = new User(2, 'Maria Premium', 'premium@email.com', 'PREMIUM');
+const item1 = new Item('Monitor', 200);
+const carrinho = new Carrinho(user, [item1]);
+\end{lstlisting}
+\textbf{Depois} (Object Mother + Data Builder):
+\begin{lstlisting}
+const carrinho = new CarrinhoBuilder()
+  .comUser(UserMother.umUsuarioPremium())
+  .comItens([new Item('Monitor', 200)])
+  .build();
+
+// Cenário em que o carrinho é irrelevante (falha de pagamento):
+const carrinho = new CarrinhoBuilder().build();
+\end{lstlisting}
+
+\subsection{Legibilidade e manutenção}
+O teste declara \emph{apenas} o que é relevante: no teste de falha de pagamento, \texttt{new CarrinhoBuilder().build()} deixa claro que o conteúdo do carrinho não importa; no teste Premium, ficam explícitos o tipo de usuário e o valor de R\$ 200,00 que justificam o desconto. Quanto à manutenção, se o construtor de \texttt{Carrinho} ou \texttt{User} mudar, basta ajustar o builder em um único lugar, em vez de corrigir dezenas de testes (evitando \emph{Fragile Tests}). Os valores padrão também garantem que os objetos sejam sempre criados em estado válido.
+
+\section{Padrões de Test Doubles (Mocks vs. Stubs)}
+\subsection{Teste escolhido: ``quando um cliente Premium finaliza a compra'' (Etapa 5)}
+\begin{lstlisting}
+it('deve cobrar o valor com 10% de desconto e enviar o e-mail de aprovação', async () => {
+  const service = new CheckoutService(gatewayStub, repositoryStub, emailMock);
+  await service.processarPedido(carrinho, CARTAO);                // Act
+
+  expect(gatewayStub.cobrar).toHaveBeenCalledWith(180, CARTAO);   // Assert
+  expect(emailMock.enviarEmail).toHaveBeenCalledTimes(1);
+  expect(emailMock.enviarEmail).toHaveBeenCalledWith(
+    'premium@email.com', 'Seu Pedido foi Aprovado!', expect.stringContaining('99'));
+});
+\end{lstlisting}
+
+\subsection{Classificação das dependências}
+\begin{tabular}{@{}l l p{7.5cm}@{}}
+\toprule
+\textbf{Dependência} & \textbf{Papel} & \textbf{Uso no teste}\\\midrule
+GatewayPagamento & Stub & \texttt{cobrar} retorna \texttt{\{ success: true \}} para o fluxo prosseguir.\\
+PedidoRepository & Stub & \texttt{salvar} retorna um pedido já ``salvo'', com ID.\\
+EmailService & Mock & Chamadas verificadas: 1 vez, com e-mail e mensagem corretos.\\\bottomrule
+\end{tabular}
+
+\subsection{Por que Gateway = Stub e EmailService = Mock?}
+A distinção (Fowler, \emph{Mocks Aren't Stubs}) está no que se verifica: \textbf{verificação de estado} \emph{vs.} \textbf{verificação de comportamento}. O \texttt{GatewayPagamento} é principalmente uma \emph{entrada indireta}: o teste precisa que ele devolva \texttt{\{ success: true \}} para o fluxo prosseguir, e o que se afirma nos testes de estado é o resultado do sistema (pedido retornado, ou \texttt{null} em caso de falha). Ele é, portanto, um Stub que controla o caminho. No teste Premium também verificamos o argumento (180) passado a \texttt{cobrar}, pois essa é a forma de observar o desconto; ainda assim, seu papel principal continua sendo o de Stub.
+
+Já o \texttt{EmailService} é um \emph{efeito colateral} (saída indireta): não há valor de retorno nem estado observável no SUT que prove o envio. A única forma de validar o requisito é verificar a \textbf{interação}: se foi chamado, quantas vezes e com quais argumentos. Isso é um Mock. Nos cenários de falha, \texttt{PedidoRepository} e \texttt{EmailService} entram como \emph{Dummies}, e o teste confirma que não são chamados (\texttt{not.toHaveBeenCalled()}).
+
+\section{Resultado da Execução}
+A suíte (\texttt{npm test}) tem 5 testes, todos aprovados: falha no pagamento (retorna \texttt{null}; não salva nem envia e-mail), cliente padrão (pedido salvo sem desconto), cliente Premium (cobrança de R\$ 180,00 e e-mail correto) e resiliência a falha no envio de e-mail. Todos seguem o padrão \textbf{Arrange-Act-Assert}.
+
+\section{Conclusão}
+O uso deliberado de Padrões de Teste previne diversos \emph{Test Smells}. O Data Builder e o Object Mother eliminam o Setup Obscuro e a duplicação na criação de objetos, deixando visível só o dado relevante e concentrando a manutenção em um ponto. Os Test Doubles isolam o SUT de gateways, bancos e e-mails reais, tornando os testes rápidos, determinísticos e independentes de infraestrutura. A escolha consciente entre Stub (controlar entradas e verificar estado) e Mock (verificar interações) evita testes frágeis e acoplados à implementação, usando verificação de comportamento apenas onde o requisito é de fato uma interação. O resultado é uma suíte legível, isolada e sustentável.
+\end{document}
